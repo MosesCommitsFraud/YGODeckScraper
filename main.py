@@ -4,75 +4,116 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
 
 # --- Configuration ---
 CHROMEDRIVER_PATH = r'C:\Users\morit\Downloads\chromedriver-win64\chromedriver-win64\chromedriver.exe'
 SEARCH_URL = "https://ygoprodeck.com/deck-search/?sort=Deck%20Views&offset=0"
+DECK_URL = "https://ygoprodeck.com/deck/blue-eyes-meta-deck-2020-new-rules-69017"
 
 # --- Setup Selenium WebDriver ---
+print("Setting up the WebDriver...")
 service = Service(CHROMEDRIVER_PATH)
 options = webdriver.ChromeOptions()
-# Uncomment the next line to run headless if desired:
+# Uncomment the following line to run headless:
 # options.add_argument('--headless')
 driver = webdriver.Chrome(service=service, options=options)
-wait = WebDriverWait(driver, 15)
-
+wait = WebDriverWait(driver, 20)  # increased timeout to 20 seconds
 
 def accept_consent():
     """
-    Click the consent button using the provided CSS selector.
+    Accepts the consent popup using the provided CSS selector.
     """
     try:
+        print("Waiting for consent popup...")
         consent_button = wait.until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR,
-                                        "body > div.fc-consent-root > div.fc-dialog-container > div.fc-dialog.fc-choice-dialog > div.fc-footer-buttons-container > div.fc-footer-buttons > button.fc-button.fc-cta-consent.fc-primary-button"
-                                        ))
+            EC.element_to_be_clickable((
+                By.CSS_SELECTOR,
+                "body > div.fc-consent-root > div.fc-dialog-container > div.fc-dialog.fc-choice-dialog > div.fc-footer-buttons-container > div.fc-footer-buttons > button.fc-button.fc-cta-consent.fc-primary-button"
+            ))
         )
         consent_button.click()
         print("Consent accepted.")
-        time.sleep(2)  # Wait a bit for the consent to process
+        time.sleep(2)  # Allow time for the consent to process
     except Exception as e:
         print("Consent button not found or error clicking it:", e)
 
-
 try:
-    # 1. Load the deck search page
+    # 1. Load the deck search page (this triggers the consent popup).
+    print("Loading the search page...")
     driver.get(SEARCH_URL)
-    print("Loaded search page.")
-
-    # 2. Accept the data consent popup
+    print("Search page loaded.")
     accept_consent()
-
-    # 3. Locate the first deck's link using the exact CSS path provided
-    deck_selector = (
-        "body > main > div > div.info-area > div.searcher-container.container-card > "
-        "div.deck-searcher-bottom-pane > div.deck-layout-flex.grid-of-decks.justify-content-center.px-3.py-2 > "
-        "div:nth-child(1) > div > div > div.d-flex.flex-column.text-left.p-2.rounded-bottom.deck_article-card-details.text-white > a"
-    )
-
-    deck_link = wait.until(
-        EC.element_to_be_clickable((By.CSS_SELECTOR, deck_selector))
-    )
-
-    # Optionally, print the href attribute to confirm we found the correct link.
-    deck_url = deck_link.get_attribute("href")
-    print("Found first deck URL:", deck_url)
-
-    # 4. Scroll the deck element into view
-    driver.execute_script("arguments[0].scrollIntoView(true);", deck_link)
     time.sleep(1)
 
-    # 5. Instead of deck_link.click(), use JavaScript to click the element.
-    driver.execute_script("arguments[0].click();", deck_link)
-    print("Clicked the deck link using JavaScript.")
+    # 2. Navigate to the deck detail page.
+    print("Navigating to the deck detail page...")
+    driver.get(DECK_URL)
+    # Wait for the main deck element to be present.
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#main_deck")))
+    print("Deck detail page loaded.")
 
-    # 6. Wait for the deck detail page to load.
-    # Adjust the selector below if necessary – here we assume an element with class '.deck-content' indicates the deck page.
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".deck-content")))
-    print("Deck detail page loaded successfully.")
+    # 3. Retrieve and parse the page source.
+    print("Retrieving page source...")
+    html = driver.page_source
+    soup = BeautifulSoup(html, "html.parser")
+    print("Page source parsed.")
+
+    # 4. Locate the deck sections using their IDs.
+    print("Locating deck sections...")
+    main_section  = soup.select_one("#main_deck")
+    extra_section = soup.select_one("#extra_deck")
+    side_section  = soup.select_one("#side_deck")
+
+    if main_section is None:
+        print("Could not find the main deck container (#main_deck).")
+    else:
+        print("Main deck container found.")
+    if extra_section is None:
+        print("Could not find the extra deck container (#extra_deck).")
+    else:
+        print("Extra deck container found.")
+    if side_section is None:
+        print("Could not find the side deck container (#side_deck).")
+    else:
+        print("Side deck container found.")
+
+    # 5. Extract card IDs from each section.
+    # Each card is represented by an <img> tag with classes "lazy master-duel-card"
+    # and the card ID is stored in its "data-name" attribute.
+    def extract_card_ids(section):
+        if section is None:
+            return []
+        images = section.find_all("img", class_="lazy master-duel-card")
+        print(f"Found {len(images)} card images in section.")
+        return [img.get("data-name") for img in images if img.has_attr("data-name")]
+
+    print("Extracting main deck card IDs...")
+    main_cards  = extract_card_ids(main_section)
+    print("Extracting extra deck card IDs...")
+    extra_cards = extract_card_ids(extra_section)
+    print("Extracting side deck card IDs...")
+    side_cards  = extract_card_ids(side_section)
+
+    # 6. Build the YDK file content.
+    print("Building YDK content...")
+    ydk_lines = []
+    ydk_lines.append("#main")
+    ydk_lines.extend(main_cards)
+    ydk_lines.append("#extra")
+    ydk_lines.extend(extra_cards)
+    ydk_lines.append("!side")
+    ydk_lines.extend(side_cards)
+    ydk_content = "\n".join(ydk_lines) + "\n"
+
+    # 7. Save the content to a file.
+    output_filename = "deck.ydk"
+    with open(output_filename, "w") as f:
+        f.write(ydk_content)
+    print(f"Deck YDK file created successfully as '{output_filename}'!")
 
 except Exception as e:
-    print("Error during test run:", e)
+    print("Error during run:", e)
 
 finally:
     driver.quit()
