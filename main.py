@@ -1,90 +1,125 @@
+import os
+import time
+import requests
+
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-import time
-import os
 
-# Set download directory
-download_dir = os.path.join(os.getcwd(), "ydk_downloads")
-os.makedirs(download_dir, exist_ok=True)
+# --- Configuration ---
+CHROMEDRIVER_PATH = r'C:\Users\morit\Downloads\chromedriver-win64\chromedriver-win64\chromedriver.exe'
+BASE_URL = "https://ygoprodeck.com/deck-search/?sort=Deck%20Views&offset={offset}"
+START_OFFSET = 0  # starting offset (0 for the first page)
+NUM_PAGES = 3  # number of pages to process; adjust as needed
 
-# Configure Chrome to auto-download files
-chrome_options = Options()
-chrome_options.add_experimental_option("prefs", {
-    "download.default_directory": download_dir,
-    "download.prompt_for_download": False,
-    "download.directory_upgrade": True,
-    "safebrowsing.enabled": True
-})
+# --- Setup Selenium WebDriver ---
+service = Service(CHROMEDRIVER_PATH)
+options = webdriver.ChromeOptions()
+# Uncomment the following line to run in headless mode:
+# options.add_argument('--headless')
+driver = webdriver.Chrome(service=service, options=options)
+wait = WebDriverWait(driver, 15)
 
-# Set up WebDriver
-service = Service(ChromeDriverManager().install())
-driver = webdriver.Chrome(service=service, options=chrome_options)
-wait = WebDriverWait(driver, 10)
 
-# Open the Deck Search Page
-url = "https://ygoprodeck.com/deck-search/?sort=Deck%20Views&offset=0"
-driver.get(url)
-
-# Handle the cookie consent popup
-try:
-    consent_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Accept')]")))
-    consent_button.click()
-    print("Accepted cookie consent form.")
-    time.sleep(2)
-except Exception:
-    print("No cookie consent popup detected.")
-
-# Wait for decks to load
-time.sleep(3)
-
-# Scroll down to load more decks (adjust range for more scrolling)
-for _ in range(5):
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-    time.sleep(2)
-
-# Find all deck buttons
-deck_buttons = driver.find_elements(By.CSS_SELECTOR, "button.deck_button")
-print(f"Found {len(deck_buttons)} decks.")
-
-# Iterate through decks
-for i, button in enumerate(deck_buttons):
+def accept_consent():
+    """
+    Clicks the data consent popup using the provided CSS selector.
+    Returns True if the consent button was successfully clicked.
+    """
+    accepted = False
     try:
-        print(f"Opening deck {i + 1}/{len(deck_buttons)}")
-
-        # Click the deck button to open its page
-        button.click()
-        time.sleep(2)
-
-        # Switch to the newly opened deck page
-        driver.switch_to.window(driver.window_handles[-1])
-
-        # Click the "More..." dropdown
-        more_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'More')]")))
-        more_button.click()
-        time.sleep(1)
-
-        # Click the .ydk download button
-        ydk_download = wait.until(EC.element_to_be_clickable((By.PARTIAL_LINK_TEXT, ".ydk")))
-        ydk_download.click()
-
-        print("Download started.")
-
-        # Wait for the file to download
-        time.sleep(5)
-
-        # Close the current tab and switch back to the main page
-        driver.close()
-        driver.switch_to.window(driver.window_handles[0])
-
+        consent_button = wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR,
+                                        "body > div.fc-consent-root > div.fc-dialog-container > div.fc-dialog.fc-choice-dialog > div.fc-footer-buttons-container > div.fc-footer-buttons > button.fc-button.fc-cta-consent.fc-primary-button"
+                                        ))
+        )
+        consent_button.click()
+        print("Consent button clicked.")
+        accepted = True
+        time.sleep(2)  # Allow time for the consent action to complete
     except Exception as e:
-        print(f"Failed to download .ydk: {e}")
+        print("Error clicking consent button:", e)
+    return accepted
 
-# Close browser
-driver.quit()
 
-print(f"Downloads complete. Check the '{download_dir}' folder.")
+try:
+    # Loop through the deck search pages
+    for page in range(NUM_PAGES):
+        current_offset = START_OFFSET + page * 20
+        search_url = BASE_URL.format(offset=current_offset)
+        print(f"\nLoading deck search page: {search_url}")
+        driver.get(search_url)
+
+        # Accept the data consent popup
+        accept_consent()
+
+        # --- Extract deck links from the search page ---
+        try:
+            deck_link_elements = wait.until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a.deck-card-link"))
+            )
+        except Exception as e:
+            print("Error finding deck links:", e)
+            continue
+
+        deck_urls = [elem.get_attribute("href") for elem in deck_link_elements if elem.get_attribute("href")]
+        print(f"Found {len(deck_urls)} decks on this page.")
+
+        # Process each deck URL
+        for deck_url in deck_urls:
+            print(f"\nProcessing deck: {deck_url}")
+            try:
+                driver.get(deck_url)
+
+                # Wait for the deck detail page to load (adjust the selector if needed)
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".deck-content")))
+
+                # --- Click on the "More..." button to reveal the download option ---
+                try:
+                    more_button = wait.until(
+                        EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'More')]"))
+                    )
+                    more_button.click()
+                    print("Clicked 'More...' button.")
+                    time.sleep(1)
+                except Exception as e:
+                    print("Could not find or click the 'More...' button:", e)
+                    continue
+
+                # --- Locate the Download YDK button/link ---
+                try:
+                    download_button = wait.until(
+                        EC.element_to_be_clickable((By.XPATH, "//a[contains(., 'Download YDK')]"))
+                    )
+                    ydk_url = download_button.get_attribute("href")
+                    if not ydk_url:
+                        print("Download URL not found.")
+                        continue
+                    print("Found YDK URL:", ydk_url)
+                except Exception as e:
+                    print("Could not locate the Download YDK button:", e)
+                    continue
+
+                # --- Download the YDK file ---
+                try:
+                    response = requests.get(ydk_url)
+                    response.raise_for_status()
+                    # Use the basename from the URL or another naming convention
+                    filename = os.path.basename(ydk_url) or "deck.ydk"
+                    with open(filename, "wb") as f:
+                        f.write(response.content)
+                    print(f"Downloaded deck as {filename}")
+                except Exception as e:
+                    print("Failed to download YDK file:", e)
+
+            except Exception as deck_exception:
+                print(f"Error processing deck at {deck_url}:", deck_exception)
+
+            # Pause between deck downloads to be polite to the server.
+            time.sleep(1)
+
+finally:
+    driver.quit()
+    print("Webdriver closed.")
