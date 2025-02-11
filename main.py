@@ -1,7 +1,4 @@
-import os
 import time
-import requests
-
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -10,14 +7,12 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # --- Configuration ---
 CHROMEDRIVER_PATH = r'C:\Users\morit\Downloads\chromedriver-win64\chromedriver-win64\chromedriver.exe'
-BASE_URL = "https://ygoprodeck.com/deck-search/?sort=Deck%20Views&offset={offset}"
-START_OFFSET = 0  # starting offset (0 for the first page)
-NUM_PAGES = 3  # number of pages to process; adjust as needed
+SEARCH_URL = "https://ygoprodeck.com/deck-search/?sort=Deck%20Views&offset=0"
 
 # --- Setup Selenium WebDriver ---
 service = Service(CHROMEDRIVER_PATH)
 options = webdriver.ChromeOptions()
-# Uncomment the following line to run in headless mode:
+# Uncomment the next line to run headless if desired:
 # options.add_argument('--headless')
 driver = webdriver.Chrome(service=service, options=options)
 wait = WebDriverWait(driver, 15)
@@ -25,10 +20,8 @@ wait = WebDriverWait(driver, 15)
 
 def accept_consent():
     """
-    Clicks the data consent popup using the provided CSS selector.
-    Returns True if the consent button was successfully clicked.
+    Click the consent button using the provided CSS selector.
     """
-    accepted = False
     try:
         consent_button = wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR,
@@ -36,89 +29,50 @@ def accept_consent():
                                         ))
         )
         consent_button.click()
-        print("Consent button clicked.")
-        accepted = True
-        time.sleep(2)  # Allow time for the consent action to complete
+        print("Consent accepted.")
+        time.sleep(2)  # Wait a bit for the consent to process
     except Exception as e:
-        print("Error clicking consent button:", e)
-    return accepted
+        print("Consent button not found or error clicking it:", e)
 
 
 try:
-    # Loop through the deck search pages
-    for page in range(NUM_PAGES):
-        current_offset = START_OFFSET + page * 20
-        search_url = BASE_URL.format(offset=current_offset)
-        print(f"\nLoading deck search page: {search_url}")
-        driver.get(search_url)
+    # 1. Load the deck search page
+    driver.get(SEARCH_URL)
+    print("Loaded search page.")
 
-        # Accept the data consent popup
-        accept_consent()
+    # 2. Accept the data consent popup
+    accept_consent()
 
-        # --- Extract deck links from the search page ---
-        try:
-            deck_link_elements = wait.until(
-                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a.deck-card-link"))
-            )
-        except Exception as e:
-            print("Error finding deck links:", e)
-            continue
+    # 3. Locate the first deck's link using the exact CSS path provided
+    deck_selector = (
+        "body > main > div > div.info-area > div.searcher-container.container-card > "
+        "div.deck-searcher-bottom-pane > div.deck-layout-flex.grid-of-decks.justify-content-center.px-3.py-2 > "
+        "div:nth-child(1) > div > div > div.d-flex.flex-column.text-left.p-2.rounded-bottom.deck_article-card-details.text-white > a"
+    )
 
-        deck_urls = [elem.get_attribute("href") for elem in deck_link_elements if elem.get_attribute("href")]
-        print(f"Found {len(deck_urls)} decks on this page.")
+    deck_link = wait.until(
+        EC.element_to_be_clickable((By.CSS_SELECTOR, deck_selector))
+    )
 
-        # Process each deck URL
-        for deck_url in deck_urls:
-            print(f"\nProcessing deck: {deck_url}")
-            try:
-                driver.get(deck_url)
+    # Optionally, print the href attribute to confirm we found the correct link.
+    deck_url = deck_link.get_attribute("href")
+    print("Found first deck URL:", deck_url)
 
-                # Wait for the deck detail page to load (adjust the selector if needed)
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".deck-content")))
+    # 4. Scroll the deck element into view
+    driver.execute_script("arguments[0].scrollIntoView(true);", deck_link)
+    time.sleep(1)
 
-                # --- Click on the "More..." button to reveal the download option ---
-                try:
-                    more_button = wait.until(
-                        EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'More')]"))
-                    )
-                    more_button.click()
-                    print("Clicked 'More...' button.")
-                    time.sleep(1)
-                except Exception as e:
-                    print("Could not find or click the 'More...' button:", e)
-                    continue
+    # 5. Instead of deck_link.click(), use JavaScript to click the element.
+    driver.execute_script("arguments[0].click();", deck_link)
+    print("Clicked the deck link using JavaScript.")
 
-                # --- Locate the Download YDK button/link ---
-                try:
-                    download_button = wait.until(
-                        EC.element_to_be_clickable((By.XPATH, "//a[contains(., 'Download YDK')]"))
-                    )
-                    ydk_url = download_button.get_attribute("href")
-                    if not ydk_url:
-                        print("Download URL not found.")
-                        continue
-                    print("Found YDK URL:", ydk_url)
-                except Exception as e:
-                    print("Could not locate the Download YDK button:", e)
-                    continue
+    # 6. Wait for the deck detail page to load.
+    # Adjust the selector below if necessary – here we assume an element with class '.deck-content' indicates the deck page.
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".deck-content")))
+    print("Deck detail page loaded successfully.")
 
-                # --- Download the YDK file ---
-                try:
-                    response = requests.get(ydk_url)
-                    response.raise_for_status()
-                    # Use the basename from the URL or another naming convention
-                    filename = os.path.basename(ydk_url) or "deck.ydk"
-                    with open(filename, "wb") as f:
-                        f.write(response.content)
-                    print(f"Downloaded deck as {filename}")
-                except Exception as e:
-                    print("Failed to download YDK file:", e)
-
-            except Exception as deck_exception:
-                print(f"Error processing deck at {deck_url}:", deck_exception)
-
-            # Pause between deck downloads to be polite to the server.
-            time.sleep(1)
+except Exception as e:
+    print("Error during test run:", e)
 
 finally:
     driver.quit()
