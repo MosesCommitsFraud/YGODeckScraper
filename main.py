@@ -10,9 +10,8 @@ from bs4 import BeautifulSoup
 
 # --- Configuration ---
 CHROMEDRIVER_PATH = r'C:\Users\morit\Downloads\chromedriver-win64\chromedriver-win64\chromedriver.exe'
-# The search URL has an offset parameter.
-BASE_SEARCH_URL = "https://ygoprodeck.com/deck-search/?sort=Deck%20Views&offset={offset}"
-offset = 0
+# Use the first page URL (offset parameter is not used for pagination anymore)
+BASE_SEARCH_URL = "https://ygoprodeck.com/category/format/tournament%20meta%20decks?offset=1000"
 
 # Folder to save the downloaded YDK files.
 download_folder = "ydk_download"
@@ -23,11 +22,10 @@ if not os.path.exists(download_folder):
 print("Setting up the WebDriver...")
 service = Service(CHROMEDRIVER_PATH)
 options = webdriver.ChromeOptions()
-# Uncomment to run headless:
+# Uncomment the next line to run headless:
 # options.add_argument('--headless')
 driver = webdriver.Chrome(service=service, options=options)
-wait = WebDriverWait(driver, 20)  # timeout increased to 20 seconds
-
+wait = WebDriverWait(driver, 20)  # increased timeout
 
 def accept_consent():
     """
@@ -47,7 +45,6 @@ def accept_consent():
     except Exception as e:
         print("Consent popup not found or error:", e)
 
-
 def extract_card_ids(section):
     """
     Given a BeautifulSoup element representing a deck section,
@@ -60,40 +57,35 @@ def extract_card_ids(section):
     print(f"  Found {len(images)} card images in section.")
     return [img.get("data-name") for img in images if img.has_attr("data-name")]
 
-
 try:
-    # 1. Load the initial search page and accept consent.
-    print("Loading initial search page for consent...")
-    driver.get(BASE_SEARCH_URL.format(offset=0))
+    # 1. Load the first search page and accept consent.
+    print("Loading initial search page...")
+    driver.get(BASE_SEARCH_URL)
     time.sleep(2)
     accept_consent()
     time.sleep(2)
 
-    # Loop over search pages until no deck links are found.
     while True:
-        current_search_url = BASE_SEARCH_URL.format(offset=offset)
-        print(f"\nLoading search page: {current_search_url}")
-        driver.get(current_search_url)
-
-        # Wait for the container that holds the deck links.
+        # Wait for the deck container to be present.
         try:
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.deck-searcher-bottom-pane")))
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#latest-decks")))
         except Exception as e:
             print("Timeout waiting for deck container:", e)
             break
 
-        # Wait a bit extra for the decks to load.
+        # Extra wait to ensure all decks are loaded.
         time.sleep(5)
 
-        # Parse the search page HTML.
+        # Parse the current page HTML.
         search_html = driver.page_source
         search_soup = BeautifulSoup(search_html, "html.parser")
 
-        # Extract deck links. (Using the deck link element's class.)
+        # Extract all deck links.
+        # (Using a selector similar to the one you provided but without nth-child so all decks are selected.)
         deck_elements = search_soup.select(
-            "a.stretched-link.text-decoration-none.text-reset.text-truncate.deck_article-card-title"
+            "#latest-decks > div > div > div > div > div.d-flex.flex-column.text-left.p-2.rounded-bottom.deck_article-card-details.text-white > a"
         )
-        print(f"Found {len(deck_elements)} deck elements on the search page (offset={offset}).")
+        print(f"Found {len(deck_elements)} deck elements on current page.")
 
         if not deck_elements:
             print("No deck elements found. Ending pagination.")
@@ -107,22 +99,22 @@ try:
             if href:
                 deck_url = href if href.startswith("http") else "https://ygoprodeck.com" + href
                 deck_list.append((deck_url, name))
-        print("Deck list extracted from search page.")
+        print("Deck list extracted from current page.")
 
-        # Save the current window handle (search page).
+        # Save the current window handle (the search page).
         original_window = driver.current_window_handle
 
-        # 2. Process each deck on the current search page.
-        for idx, (deck_url, deck_name) in enumerate(deck_list, start=1):
+        # 2. Process each deck on the current page.
+        for deck_url, deck_name in deck_list:
             print(f"\nProcessing deck '{deck_name}' ({deck_url})")
-            # Open deck detail in a new tab.
+            # Open the deck detail in a new tab.
             driver.execute_script("window.open(arguments[0], '_blank');", deck_url)
             time.sleep(2)
             windows = driver.window_handles
             driver.switch_to.window(windows[-1])
 
             try:
-                # Wait for the deck detail page to load (by waiting for #main_deck).
+                # Wait for the deck detail page to load (by waiting for the #main_deck element).
                 wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "#main_deck")))
                 print("Deck detail page loaded.")
 
@@ -130,7 +122,7 @@ try:
                 deck_html = driver.page_source
                 deck_soup = BeautifulSoup(deck_html, "html.parser")
 
-                # Locate deck sections by their IDs.
+                # Locate deck sections.
                 main_section = deck_soup.select_one("#main_deck")
                 extra_section = deck_soup.select_one("#extra_deck")
                 side_section = deck_soup.select_one("#side_deck")
@@ -149,7 +141,7 @@ try:
                 print("Extracting side deck card IDs...")
                 side_cards = extract_card_ids(side_section)
 
-                # Build YDK file content.
+                # Build the YDK file content.
                 ydk_lines = []
                 ydk_lines.append("#main")
                 ydk_lines.extend(main_cards)
@@ -159,24 +151,44 @@ try:
                 ydk_lines.extend(side_cards)
                 ydk_content = "\n".join(ydk_lines) + "\n"
 
-                # Sanitize deck name for filename.
+                # Sanitize deck name for a safe filename.
                 safe_deck_name = re.sub(r'[^A-Za-z0-9_\-]', '_', deck_name)
                 filename = os.path.join(download_folder, safe_deck_name + ".ydk")
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write(ydk_content)
                 print(f"Created YDK file: '{filename}'")
-
             except Exception as e:
                 print("Error processing deck detail page:", e)
             finally:
-                # Close the deck detail tab and return to search page.
+                # Close the deck detail tab and return to the search page.
                 driver.close()
                 driver.switch_to.window(original_window)
                 time.sleep(2)
 
-        # Increment the offset for the next search page.
-        offset += 20
-        time.sleep(2)
+        # 3. Attempt to navigate to the next page.
+        try:
+            # Hide any interfering ad iframes (those with IDs starting with "google_ads_iframe")
+            driver.execute_script("""
+                var adIframes = document.querySelectorAll('iframe[id^="google_ads_iframe"]');
+                for (var i = 0; i < adIframes.length; i++) {
+                    adIframes[i].style.display = 'none';
+                }
+            """)
+            time.sleep(1)  # Allow time for the change to take effect
+
+            # Wait for and click the next page button using JavaScript click.
+            next_page_button = wait.until(
+                EC.element_to_be_clickable((
+                    By.CSS_SELECTOR,
+                    "body > main > div > div > nav:nth-child(9) > div > button.btn.btn-primary.btn-block.d-inline.mt-0.ml-1.mr-1.prevDeck"
+                ))
+            )
+            print("Clicking next page button...")
+            driver.execute_script("arguments[0].click();", next_page_button)
+            time.sleep(5)  # Wait for the next page to load.
+        except Exception as e:
+            print("Next page button not found or error:", e)
+            break
 
 except Exception as e:
     print("Error during run:", e)
